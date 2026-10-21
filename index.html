@@ -20,7 +20,6 @@
     .btn-primary:hover { background: #1557b0; }
     .btn-success { background: #0f9d58; color: #fff; }
     .btn-success:hover { background: #0b8043; }
-    .btn-danger { background: #db4437; color: #fff; }
     .btn-secondary { background: #e0e0e0; color: #333; }
     .btn:disabled { opacity: 0.6; cursor: not-allowed; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -32,17 +31,22 @@
     .summary { display: flex; justify-content: space-between; align-items: center; padding: 15px; background: #e8f0fe; border-radius: 8px; margin-top: 10px; }
     .summary .total { font-size: 22px; font-weight: 700; color: #1a73e8; }
     .summary .label { font-size: 13px; color: #555; }
-    .toast { position: fixed; top: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; color: #fff; font-weight: 600; z-index: 999; animation: slideIn 0.3s ease; box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-width: 320px; }
+    .toast { position: fixed; top: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; color: #fff; font-weight: 600; z-index: 999; animation: slideIn 0.3s ease; box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-width: 340px; }
     .toast.success { background: #0f9d58; }
     .toast.error { background: #db4437; }
     .toast.info { background: #1a73e8; }
     @keyframes slideIn { from { transform: translateX(400px); } to { transform: translateX(0); } }
     .remove-btn { background: #db4437; color: #fff; border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+    .qty-input { width: 65px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px; text-align: center; font-size: 13px; }
     .barcode-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
     .status-badge { display: inline-block; padding: 3px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
     .badge-ok { background: #d4edda; color: #0f9d58; }
     .badge-loading { background: #fff3cd; color: #856404; }
     .info-line { font-size: 12px; color: #666; margin-top: 6px; }
+    #barcodeInput { font-size: 18px; font-weight: 600; letter-spacing: 1px; }
+    #barcodeInput.scanning { background: #fff3cd; border-color: #ffc107; }
+    @keyframes flash { 0%,100% { background: #fff; } 50% { background: #d4edda; } }
+    .flash { animation: flash 0.4s ease; }
     @media (max-width: 600px) { th, td { font-size: 12px; padding: 6px; } .summary .total { font-size: 18px; } }
   </style>
 </head>
@@ -53,48 +57,14 @@
     <!-- Status master barang -->
     <div class="card" style="padding: 10px 15px;">
       <span id="statusMaster" class="status-badge badge-loading">⏳ Memuat data master barang...</span>
-      <div class="info-line">Scan barcode → nama barang & harga otomatis terisi dari MasterBarang</div>
+      <div class="info-line">Scan barcode → otomatis masuk ke daftar belanja</div>
     </div>
 
     <!-- Input Barcode -->
     <div class="card">
-      <div class="barcode-row">
-        <div>
-          <label for="barcodeInput">Scan / Ketik Barcode</label>
-          <input type="text" id="barcodeInput" placeholder="Scan barcode di sini..." autofocus autocomplete="off">
-        </div>
-        <button class="btn btn-primary" onclick="cariBarcode()">🔍 Cari</button>
-      </div>
-    </div>
-
-    <!-- Form Input Item (readonly kecuali Qty) -->
-    <div class="card">
-      <div class="form-row">
-        <div>
-          <label>Barcode</label>
-          <input type="text" id="barcode" readonly placeholder="-">
-        </div>
-        <div style="grid-column: span 2;">
-          <label>Nama Barang (otomatis)</label>
-          <input type="text" id="namaBarang" readonly placeholder="Terisi otomatis dari master">
-        </div>
-        <div>
-          <label>Qty</label>
-          <input type="number" id="qty" value="1" min="1">
-        </div>
-        <div>
-          <label>Harga Normal</label>
-          <input type="number" id="hargaNormal" readonly placeholder="0">
-        </div>
-        <div>
-          <label>Harga Promo</label>
-          <input type="number" id="hargaPromo" readonly placeholder="0">
-        </div>
-      </div>
-      <div style="display: flex; gap: 8px; justify-content: flex-end;">
-        <button class="btn btn-secondary" onclick="resetForm()">Reset</button>
-        <button class="btn btn-primary" onclick="simpanItemKeTabel()">+ Tambah ke Daftar</button>
-      </div>
+      <label for="barcodeInput">📷 Scan / Ketik Barcode (Enter)</label>
+      <input type="text" id="barcodeInput" placeholder="Scan barcode di sini..." autofocus autocomplete="off" inputmode="none">
+      <div class="info-line" id="hintText">Arahkan kursor ke sini, lalu scan barcode. Item langsung masuk ke daftar.</div>
     </div>
 
     <!-- Tabel Daftar Belanja -->
@@ -142,50 +112,65 @@
   <script>
     let items = [];
     let isSaving = false;
-    let masterBarang = {}; // Map: barcode -> {namaBarang, hargaNormal, hargaPromo}
+    let masterBarang = {};
     let masterLoaded = false;
+    let lastScanTime = 0;
+    let scanBuffer = '';
 
     const barcodeInput = document.getElementById('barcodeInput');
 
-    // ===== LOAD MASTER BARANG SAAT HALAMAN DIBUKA =====
+    // ===== LOAD MASTER BARANG =====
     function loadMaster() {
+      const badge = document.getElementById('statusMaster');
+      badge.className = 'status-badge badge-loading';
+      badge.textContent = '⏳ Memuat data master barang...';
+
       google.script.run
         .withSuccessHandler(function(res) {
           if (res.success) {
             masterBarang = {};
             res.data.forEach(b => { masterBarang[b.barcode] = b; });
             masterLoaded = true;
-            const badge = document.getElementById('statusMaster');
             badge.className = 'status-badge badge-ok';
             badge.textContent = '✅ Master barang siap (' + res.data.length + ' item)';
           } else {
-            const badge = document.getElementById('statusMaster');
             badge.className = 'status-badge badge-loading';
             badge.textContent = '⚠️ Gagal load master: ' + res.message;
           }
         })
         .withFailureHandler(function(err) {
-          const badge = document.getElementById('statusMaster');
           badge.className = 'status-badge badge-loading';
           badge.textContent = '⚠️ Error: ' + err.message;
         })
         .getAllBarang();
     }
 
-    // ===== SCAN BARCODE (Enter) =====
-    barcodeInput.addEventListener('keypress', function(e) {
-      if (e.key === 'Enter') {
+    // ===== SCANNER USB: deteksi cepat ketikan + Enter =====
+    // Scanner USB biasanya mengirim karakter sangat cepat (<50ms) lalu Enter.
+    // Kita proses langsung saat Enter ditekan — tidak peduli cepat/lambat.
+    barcodeInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' || e.keyCode === 13) {
         e.preventDefault();
-        cariBarcode();
+        e.stopPropagation();
+        const bc = barcodeInput.value.trim();
+        if (bc) {
+          prosesBarcode(bc);
+        }
       }
     });
 
-    function cariBarcode() {
-      const bc = barcodeInput.value.trim();
-      if (!bc) { showToast('Barcode kosong', 'error'); return; }
-      
+    // Klik di mana saja → fokus balik ke barcode input
+    document.addEventListener('click', function(e) {
+      const tag = e.target.tagName.toLowerCase();
+      if (tag !== 'input' && tag !== 'button' && tag !== 'select') {
+        barcodeInput.focus();
+      }
+    });
+
+    // ===== PROSES BARCODE → LANGSUNG MASUK TABEL =====
+    function prosesBarcode(bc) {
       if (!masterLoaded) {
-        showToast('Master barang belum siap, tunggu sebentar...', 'info');
+        showToast('⏳ Master barang belum siap, tunggu sebentar...', 'info');
         loadMaster();
         return;
       }
@@ -194,54 +179,55 @@
       if (!barang) {
         showToast('❌ Barcode "' + bc + '" tidak ada di MasterBarang', 'error');
         barcodeInput.value = '';
-        resetForm();
+        barcodeInput.focus();
         return;
       }
 
-      // Isi form otomatis dari master
-      document.getElementById('barcode').value = barang.barcode;
-      document.getElementById('namaBarang').value = barang.namaBarang;
-      document.getElementById('hargaNormal').value = barang.hargaNormal;
-      document.getElementById('hargaPromo').value = barang.hargaPromo || '';
-      document.getElementById('qty').value = 1;
+      // Cek apakah barcode sudah ada di daftar → tambah qty
+      const existing = items.find(i => i.barcode === bc);
+      if (existing) {
+        existing.qty += 1;
+        showToast('➕ ' + barang.namaBarang + ' → qty jadi ' + existing.qty, 'success');
+      } else {
+        items.push({
+          barcode: barang.barcode,
+          namaBarang: barang.namaBarang,
+          qty: 1,
+          hargaNormal: barang.hargaNormal,
+          hargaPromo: barang.hargaPromo || 0
+        });
+        showToast('✅ ' + barang.namaBarang + ' ditambahkan', 'success');
+      }
+
+      // Flash feedback
+      barcodeInput.classList.add('scanning');
+      setTimeout(() => barcodeInput.classList.remove('scanning'), 300);
+
+      // Clear input & render
       barcodeInput.value = '';
-      document.getElementById('qty').focus();
-      document.getElementById('qty').select();
-    }
-
-    // ===== TAMBAH KE DAFTAR =====
-    function simpanItemKeTabel() {
-      const barcode = document.getElementById('barcode').value.trim();
-      const namaBarang = document.getElementById('namaBarang').value.trim();
-      const qty = parseInt(document.getElementById('qty').value) || 1;
-      const hargaNormal = parseFloat(document.getElementById('hargaNormal').value) || 0;
-      const hargaPromo = parseFloat(document.getElementById('hargaPromo').value) || 0;
-
-      if (!barcode || !namaBarang) {
-        showToast('Scan barcode dulu sebelum menambah item', 'error');
-        return;
-      }
-      if (qty < 1) {
-        showToast('Qty minimal 1', 'error');
-        return;
-      }
-
-      items.push({ barcode, namaBarang, qty, hargaNormal, hargaPromo });
       renderTabel();
-      resetForm();
+      
+      // Scroll ke baris terakhir + fokus balik
+      const rows = document.querySelectorAll('#tabelBody tr');
+      if (rows.length > 0) {
+        rows[rows.length - 1].classList.add('flash');
+        rows[rows.length - 1].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
       barcodeInput.focus();
-      showToast('✅ ' + namaBarang + ' x' + qty + ' ditambahkan', 'success');
     }
 
-    function resetForm() {
-      ['barcode','namaBarang','hargaNormal','hargaPromo'].forEach(id => document.getElementById(id).value = '');
-      document.getElementById('qty').value = 1;
-      barcodeInput.focus();
+    // ===== UBAH QTY LANGSUNG DI TABEL =====
+    function ubahQty(index, val) {
+      const qty = parseInt(val) || 1;
+      if (qty < 1) { items[index].qty = 1; }
+      else { items[index].qty = qty; }
+      renderTabel();
     }
 
     function hapusItem(index) {
       items.splice(index, 1);
       renderTabel();
+      barcodeInput.focus();
     }
 
     function renderTabel() {
@@ -266,7 +252,8 @@
         html += `<tr>
           <td>${item.barcode}</td>
           <td>${item.namaBarang}</td>
-          <td>${item.qty}</td>
+          <td><input type="number" class="qty-input" value="${item.qty}" min="1" 
+                onchange="ubahQty(${i}, this.value)" onkeydown="if(event.key==='Enter'){this.blur();barcodeInput.focus();event.preventDefault();}"></td>
           <td class="text-right">Rp ${formatNumber(item.hargaNormal)}</td>
           <td class="text-right">${item.hargaPromo > 0 ? 'Rp ' + formatNumber(item.hargaPromo) : '-'}</td>
           <td class="text-right"><strong>Rp ${formatNumber(total)}</strong></td>
@@ -304,7 +291,7 @@
           if (res.success) {
             showToast('✅ Transaksi ' + res.noTrx + ' tersimpan! Total: Rp ' + formatNumber(res.totalBayar), 'success');
             if (res.skipped && res.skipped.length > 0) {
-              setTimeout(() => showToast('⚠️ Dilewati (tidak di master): ' + res.skipped.join(', '), 'error'), 800);
+              setTimeout(() => showToast('⚠️ Dilewati: ' + res.skipped.join(', '), 'error'), 800);
             }
             items = [];
             renderTabel();
@@ -328,11 +315,14 @@
       t.className = 'toast ' + type;
       t.textContent = msg;
       document.body.appendChild(t);
-      setTimeout(() => t.remove(), 3500);
+      setTimeout(() => t.remove(), 2500);
     }
 
-    // Load master saat halaman dibuka
-    window.addEventListener('load', loadMaster);
+    // Load master & fokus input saat halaman dibuka
+    window.addEventListener('load', function() {
+      loadMaster();
+      barcodeInput.focus();
+    });
   </script>
 </body>
 </html>
